@@ -2,6 +2,7 @@ pub mod sum_of_an_nth_term;
 pub mod shamirr_secret_sharing;
 pub mod Addition_of_two_array;
 pub mod interpolation;
+pub mod zk_project;
 
 fn main() {
     let polynomial = vec![(3,2), (2,1), (5,0)];

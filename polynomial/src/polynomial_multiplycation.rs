@@ -12,8 +12,21 @@ fn polynomial_mul(poly1: Vec<i32>, poly2: Vec<i32>) -> Vec<i32>{
 }
 
 fn main(){
-    let poly1 = vec![1,2,3];
-    let poly2 = vec![4,3,1,2];
-    let result = polynomial_mul(poly1, poly2);
+
+    
     println!("{:?}", result);
+}
+
+#[cfg(test)]
+
+mod tests{
+    use super::*;
+
+    #[test]
+    fn test_polynomial_mul(){
+        let poly1 = vec![1,2,3];
+        let poly2 = vec![4,3,1,2];
+        let result = polynomial_mul(poly1, poly2);
+        assert_eq!();
+    }
 }
