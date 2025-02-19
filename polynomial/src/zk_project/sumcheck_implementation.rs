@@ -2,133 +2,159 @@ use ark_bn254::Fq;
 use ark_ff::{BigInteger, Field, PrimeField};
 use ark_std::rand::Rng;
 use sha2::{Sha256, Digest};
-use ark_crypto_primitives::sponge::{CryptographicSponge, FieldBasedCryptographicSponge};
-
-// type F = Fr;
+use super::{multilinear_polynomial::MultilinearPoly, transcript::{HashTrait, Transcript}};
 const PRIME: u64 = 23; 
-type Polynomial<F> = Vec<F>;
+type Polynomial<F> = MultilinearPoly<F>;
 
-fn prover<F : PrimeField>(f: &Polynomial<F>, num_vars: usize) -> (F, Vec<Vec<F>>) {
-    let h: F = compute_sum(f); // Step 1: Compute the sum H
-    //change the proof to round proof
-    // I need to add the initia poly(f) and the total sum(h) to the transcript In both the verifier and prover
-    let mut proof = vec![Vec::new()];
-    let mut challenges = Vec::new();
+
+
+fn prover<F : PrimeField, K: HashTrait>(initial_poly: Polynomial<F>, num_vars: usize, hash_function: K) -> (F, Vec<Vec<F>>) {
+
+    let claimed_sum: F = compute_sum(&initial_poly);
+
+    let mut proof = vec![];
+    let mut transcript = Transcript::init(hash_function);
+
+    transcript.absorb(&claimed_sum.into_bigint().to_bytes_be());
+
+    transcript.absorb(&to_bytes(&initial_poly.coefficients));
+
+    let mut poly = initial_poly;
     
     for round in 0..num_vars {
-        let g_i = compute_partial_sum(f, &challenges, round);
-        proof.push(g_i);
+        
+        let round_poly = generate_round_poly(&poly);
+        
+        transcript.absorb(&to_bytes(&round_poly));
+        
+        proof.push(round_poly);
 
-        let r_i = hash(&h, &proof[round]);
-        challenges.push(r_i);
+        let challenge = transcript.squeeze();
+        dbg!(&challenge);
+
+       poly = poly.partial_evaluate((0, challenge));
+
+       dbg!(&poly.coefficients);
     }
     
-    // let final_eval = evaluate_Polynomial(f, &challenges);
-    // proof.push(final_eval);
-    
-    (h, proof)
-    
+    (claimed_sum, proof)
 }
 
 
-fn verifier<F : PrimeField>(h: F, proof: &Vec<Vec<F>>, f: &Polynomial<F>, num_vars: usize) -> bool {
-    let mut challenges = Vec::new();
-    let g_i = proof[round];
-        if !verify_partial_sum(&g_i, &challenges, round) {
-            return false;
-        }
-    
-    for round in 0..num_vars {
-        let r_i = hash(&h, &proof[round]);
-        challenges.push(r_i);
 
-        // let g_i = proof[round];
-        // if !verify_partial_sum(&g_i, &challenges, round) {
-        //     return false;
-        // }
+
+
+
+ fn to_bytes<F:PrimeField>(values: &Vec<F>) -> Vec<u8>{
+    let mut result = vec![];
+    for value in values{
+       result.extend(value.into_bigint().to_bytes_be());
     }
+
+    result
+ }
+
+
+
+ fn generate_round_poly<F:PrimeField>(poly: &Polynomial<F>) ->Vec<F>{
+    let eval_zero = poly.partial_evaluate((0,F::zero())).coefficients.iter().sum();
+    let eval_one = poly.partial_evaluate((0,F::one())).coefficients.iter().sum();
+    vec![eval_zero,eval_one]
+ }
+
+ fn compute_sum<F: PrimeField>(poly: &MultilinearPoly<F>) -> F {
+    poly.coefficients.iter().sum()
+ }
+
+
+fn verifier<F : PrimeField, K: HashTrait>(claimed_sum: F, proof: &Vec<Vec<F>>, num_vars: usize , initial_poly: &Polynomial<F>, hash_function: K) -> bool {
     
-    let final_eval = proof.last().unwrap();
-    // I will evaluate the final final_eval at the last challenge
-    if *final_eval != evaluate_Polynomial(f, &challenges) {
-        return false;
+    dbg!("Verifier");
+
+    let mut transcript = Transcript:: init(hash_function);
+    transcript.absorb(&claimed_sum.into_bigint().to_bytes_be());
+    transcript.absorb(&to_bytes(&initial_poly.coefficients));
+
+    let mut running_claim= claimed_sum;
+    let mut challenges =vec![];
+
+    for round_poly in proof {
+        if round_poly.len() !=2 {
+           return false;
+        } 
+        assert!(running_claim == round_poly.iter().sum());
+        transcript.absorb(&to_bytes(round_poly));
+
+        let challenge = transcript.squeeze();
+        challenges.push(challenge);
+
+        dbg!(&challenge);
+
+         running_claim = round_poly[0] + challenge * (round_poly[1] - round_poly[0]);
+
+         dbg!(&running_claim);
+        
     }
-    //if h != compute_sum(f) {
-       // return false;
-   // }
-    true
-}
+    let final_eval = initial_poly.evaluate(&challenges);
 
-fn compute_sum<F : PrimeField>(f: &Polynomial<F>) -> F {
-    f.iter().fold(F::zero(), |acc, &x| acc + x)
-}
+    dbg!(&final_eval);
+    dbg!(&running_claim);
 
-fn compute_partial_sum<F : PrimeField>(f: &Polynomial<F>, challenges: &[F], round: usize) -> Vec<F> {
-    let mut sum = F::zero();
-    
-    for (i, &coeff) in f.iter().enumerate() {
-            if round == 0 {
-                sum += coeff;
-            } else{
-              sum += coeff * challenges[0].pow([i as u64]);
-        }
-    }
-    sum
+    running_claim == final_eval
 }
 
 
 
-fn evaluate_Polynomial<F : PrimeField>(f: &Polynomial<F>, challenges: &[F]) -> F {
- let x = challenges[0];
-  f.iter()
-  .enumerate()
-  .fold(F::zero(), |acc, (i, &coeff)| acc + coeff * x.pow([i as u64]))
+
+#[cfg(test)]
+mod test {
+use crate::zk_project::sumcheck_implementation::{prover, verifier};
+
+// Test the Sumcheck protocol
+use super::MultilinearPoly;
+use ark_bn254::Fq;
+use sha3::{Keccak256, Digest};
+
+// Define a simple multilinear polynomial: f(x1, x2) = 2x1 + 3x2
+fn create_test_polynomial() -> MultilinearPoly<Fq> {
+    let coefficients = vec![
+        Fq::from(0),  // f(0, 0) = 0
+        Fq::from(3),  // f(0, 1) = 3
+        Fq::from(2),  // f(1, 0) = 2
+        Fq::from(5),  // f(1, 1) = 5
+    ];
+    MultilinearPoly::new(coefficients)
 }
 
-fn hash<F : PrimeField>(h: &F, proof: &[F]) -> F {
-    let mut hasher = Sha256::new();
-    hasher.update(h.into_bigint().to_bytes_be().as_slice());
-    for p in proof {
-        hasher.update(p.into_bigint().to_bytes_be().as_slice());
-    }
-    let result = hasher.finalize();
-    F::from(result[0] as u64)
+#[test]
+fn test_sumcheck_protocol() {
+    // Create a test polynomial
+    let poly = create_test_polynomial();
+
+    // Number of variables in the polynomial
+    let num_vars = 2;
+
+    // Initialize the hash function for the transcript
+    let hash_function = Keccak256::new();
+
+    // Run the prover
+    let (claimed_sum, proof) = prover(poly.clone(), num_vars, hash_function.clone());
+
+    dbg!(&proof);
+    dbg!(&claimed_sum);
+
+    // Verify the proof
+    let is_valid = verifier(claimed_sum, &proof, num_vars, &poly, hash_function);
+
+    // Check that the proof is valid
+    assert!(is_valid, "Sumcheck protocol verification failed");
+
+    // Print the results
+    println!("Claimed sum: {}", claimed_sum);
+    println!("Proof: {:?}", proof);
+    println!("Verification result: {}", is_valid);
 }
 
-fn verify_partial_sum<F : PrimeField>(f: &Polynomial<F>, challenges: &[F], round: usize) -> bool{
-    todo!()
-}
-
-fn main() {
-    let f: Polynomial<Fq> = vec![2.into(), 5.into(),6.into()];
-  let  num_vars =1; 
-    
-    let (h, proof) = prover(&f, num_vars);
-    println!("Prover's sum H: {:?}", h);
-    println!("Prover's proof: {:?}", proof);
-    
-    let is_valid = verifier(h, &proof, &f, num_vars);
-    println!("Verifier result: {}", is_valid);
 }
 
 
-// fn sum_to_n<F: PrimeField>(n : u32) -> F{
-//     let mut sum = F::from(0);
-//     for i in 1..=n{
-//         sum = sum + F::from(i);
-//     }
-//     sum
-// }
-
-
-// #[cfg(test)]
-
-// mod tests{
-//     use super::*;
-
-//     #[test]
-//     fn test_sum_to_n(){
-//         let answer:Fq = sum_to_n(10);
-//         assert_eq!(answer,Fq::from(55));
-//     }
-// }

@@ -11,3 +11,4 @@ rand = "0.8.5"
 ark-bn254 = "0.5.0"
 sha2 = "0.10.8"
 ark-crypto-primitives = {version = "0.5.0", features = ["sponge"]}
+sha3 = "0.10.8"
